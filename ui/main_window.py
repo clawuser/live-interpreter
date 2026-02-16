@@ -1,8 +1,8 @@
 """
 主窗口 - 同声传译 UI
-左栏原文 + 右栏译文 + 设置
 """
 
+import os
 import logging
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -22,8 +22,6 @@ logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
-    """同声传译主窗口"""
-
     result_signal = pyqtSignal(str, object)
 
     def __init__(self, config: dict):
@@ -38,54 +36,50 @@ class MainWindow(QMainWindow):
         self._load_devices()
 
     def _init_ui(self):
-        ui_config = self.config.get("ui", {})
+        ui = self.config.get("ui", {})
         self.setWindowTitle("🎙️ Live Interpreter - 同声传译")
-        self.resize(ui_config.get("window_width", 900), ui_config.get("window_height", 600))
-
-        if ui_config.get("always_on_top", False):
+        self.resize(ui.get("window_width", 900), ui.get("window_height", 600))
+        if ui.get("always_on_top"):
             self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+        font_size = ui.get("font_size", 14)
 
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
 
-        # === 顶部行1：语言 + 设置 ===
-        row1 = QHBoxLayout()
-        self.lang_selector = LanguageSelector()
-        row1.addWidget(self.lang_selector)
-        row1.addStretch()
+        # === 顶部：语言 + 音频源 + 设备 + 设置 ===
+        top = QHBoxLayout()
 
+        self.lang_selector = LanguageSelector()
+        top.addWidget(self.lang_selector)
+        top.addStretch()
+
+        # 音频源类型
+        top.addWidget(QLabel("音频源:"))
+        self.source_combo = QComboBox()
+        self.source_combo.addItem("🎤 麦克风", SOURCE_MIC)
+        self.source_combo.addItem("🔊 扬声器(系统音频)", SOURCE_SPEAKER)
+        self.source_combo.setMinimumWidth(160)
+        top.addWidget(self.source_combo)
+
+        # 设备选择
+        self.device_combo = QComboBox()
+        self.device_combo.setMinimumWidth(200)
+        top.addWidget(self.device_combo)
+
+        # 设置按钮
         self.settings_btn = QPushButton("⚙️ 设置")
         self.settings_btn.setFixedHeight(32)
         self.settings_btn.setStyleSheet("""
             QPushButton { background-color: #9E9E9E; color: white; font-size: 13px; border-radius: 6px; padding: 0 14px; }
             QPushButton:hover { background-color: #757575; }
         """)
-        row1.addWidget(self.settings_btn)
-        main_layout.addLayout(row1)
+        top.addWidget(self.settings_btn)
 
-        # === 顶部行2：音频源选择 ===
-        row2 = QHBoxLayout()
-
-        row2.addWidget(QLabel("音频源:"))
-        self.source_combo = QComboBox()
-        self.source_combo.addItem("🎤 麦克风", SOURCE_MIC)
-        self.source_combo.addItem("🔊 扬声器 (系统音频)", SOURCE_SPEAKER)
-        self.source_combo.setMinimumWidth(180)
-        self.source_combo.currentIndexChanged.connect(self._on_source_changed)
-        row2.addWidget(self.source_combo)
-
-        row2.addWidget(QLabel("设备:"))
-        self.device_combo = QComboBox()
-        self.device_combo.setMinimumWidth(250)
-        row2.addWidget(self.device_combo)
-
-        row2.addStretch()
-        main_layout.addLayout(row2)
+        main_layout.addLayout(top)
 
         # === 中部：双栏 ===
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        font_size = ui_config.get("font_size", 14)
 
         left_group = QGroupBox("📝 原文 (Source)")
         left_layout = QVBoxLayout(left_group)
@@ -140,11 +134,11 @@ class MainWindow(QMainWindow):
         self.stop_btn.clicked.connect(self._on_stop)
         self.clear_btn.clicked.connect(self._on_clear)
         self.settings_btn.clicked.connect(self._on_settings)
+        self.source_combo.currentIndexChanged.connect(self._refresh_device_combo)
         self.lang_selector.language_changed.connect(self._on_language_changed)
         self.result_signal.connect(self._on_result)
 
     def _load_devices(self):
-        """加载设备列表"""
         try:
             self._devices = AudioCapture.list_devices()
         except Exception as e:
@@ -152,51 +146,42 @@ class MainWindow(QMainWindow):
             self._devices = []
         self._refresh_device_combo()
 
-    def _on_source_changed(self):
-        """音频源类型切换时刷新设备列表"""
-        self._refresh_device_combo()
-
     def _refresh_device_combo(self):
-        """根据当前音频源类型刷新设备下拉框"""
         source_type = self.source_combo.currentData()
         self.device_combo.clear()
 
-        if source_type == SOURCE_MIC:
-            self.device_combo.addItem("🎤 默认麦克风", None)
-            for d in self._devices:
-                if not d.get('is_loopback'):
-                    self.device_combo.addItem(f"🎤 {d['name']}", d['index'])
-        else:
+        if source_type == SOURCE_SPEAKER:
             self.device_combo.addItem("🔊 默认扬声器", None)
             for d in self._devices:
                 if d.get('is_loopback'):
                     self.device_combo.addItem(f"🔊 {d['name']}", d['index'])
+        else:
+            self.device_combo.addItem("🎤 默认麦克风", None)
+            for d in self._devices:
+                if not d.get('is_loopback') and d.get('type') == SOURCE_MIC:
+                    self.device_combo.addItem(f"🎤 {d['name']}", d['index'])
 
     def _on_settings(self):
         dialog = SettingsDialog(self.config, parent=self)
         if dialog.exec():
             new_config = dialog.get_config()
             self.config.update(new_config)
-
-            ui_config = new_config.get("ui", {})
-            font_size = ui_config.get("font_size", 14)
+            ui = new_config.get("ui", {})
+            font_size = ui.get("font_size", 14)
             self.source_text.setFont(QFont("Microsoft YaHei", font_size))
             self.translated_text.setFont(QFont("Microsoft YaHei", font_size))
-
-            if ui_config.get("always_on_top", False):
+            if ui.get("always_on_top"):
                 self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
             else:
                 self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint)
             self.show()
-            self.setWindowOpacity(ui_config.get("opacity", 0.95))
+            self.setWindowOpacity(ui.get("opacity", 0.95))
             self.statusBar().showMessage("✅ 设置已更新")
 
     def _on_start(self):
         if self._is_interpreting:
             return
 
-        # 检查 API Key
-        import os
         api_key = self.config.get("dashscope", {}).get("api_key", "") or os.environ.get("DASHSCOPE_API_KEY", "")
         if not api_key:
             self.statusBar().showMessage("❌ 请先在设置中配置百炼 API Key")
@@ -226,8 +211,8 @@ class MainWindow(QMainWindow):
             self.settings_btn.setEnabled(False)
             self.source_combo.setEnabled(False)
             self.device_combo.setEnabled(False)
-            source_name = "🎤 麦克风" if source_type == SOURCE_MIC else "🔊 扬声器"
-            self.statusBar().showMessage(f"🔴 同传中... ({source_name} → {target_lang})")
+            src = "🎤 麦克风" if source_type == SOURCE_MIC else "🔊 扬声器"
+            self.statusBar().showMessage(f"🔴 同传中... ({src} → {target_lang})")
         except Exception as e:
             logger.error(f"Start failed: {e}")
             self.statusBar().showMessage(f"❌ 启动失败: {e}")
@@ -251,7 +236,6 @@ class MainWindow(QMainWindow):
     def _on_language_changed(self, source_lang, target_lang):
         if self._is_interpreting and self.interpreter:
             self.interpreter.switch_language("main", target_lang)
-            self.statusBar().showMessage(f"🔴 同传中... (→ {target_lang})")
 
     @pyqtSlot(str, object)
     def _on_result(self, channel_name: str, result: TranslationResult):

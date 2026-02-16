@@ -1,4 +1,4 @@
 websocket-client>=1.6.0
 PyQt6>=6.6.0
-PyAudioWPatch>=0.2.12
+PyAudioWPatch>=0.2.12.6
 PyYAML>=6.0
