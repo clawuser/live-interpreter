@@ -1,0 +1,4 @@
+dashscope>=1.25.6
+PyQt6>=6.6.0
+pyaudio>=0.2.14
+PyYAML>=6.0
