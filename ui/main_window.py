@@ -18,7 +18,7 @@ from ui.language_selector import LanguageSelector
 from ui.settings_dialog import SettingsDialog
 from core.interpreter import Interpreter, ChannelConfig
 from core.asr_translator import TranslationResult
-from core.audio_capture import AudioCapture
+from core.audio_capture import AudioCapture, SOURCE_MIC, SOURCE_SPEAKER, SOURCE_BOTH
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +26,7 @@ logger = logging.getLogger(__name__)
 class MainWindow(QMainWindow):
     """同声传译主窗口"""
 
-    # 线程安全的信号
-    result_signal = pyqtSignal(str, object)  # (channel_name, TranslationResult)
+    result_signal = pyqtSignal(str, object)
 
     def __init__(self, config: dict):
         super().__init__()
@@ -50,36 +49,36 @@ class MainWindow(QMainWindow):
         if ui_config.get("always_on_top", False):
             self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
 
-        # 中心布局
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
 
-        # === 顶部：语言选择 + 设备选择 + 设置 ===
+        # === 顶部：语言选择 + 音频源 + 设置 ===
         top_layout = QHBoxLayout()
 
-        # 语言选择器
         self.lang_selector = LanguageSelector()
         top_layout.addWidget(self.lang_selector)
 
         top_layout.addStretch()
 
-        # 音频设备选择
+        # 音频源模式
         top_layout.addWidget(QLabel("音频源:"))
-        self.device_combo = QComboBox()
-        self.device_combo.setMinimumWidth(200)
-        top_layout.addWidget(self.device_combo)
+        self.source_mode_combo = QComboBox()
+        self.source_mode_combo.addItem("🎤 麦克风", SOURCE_MIC)
+        self.source_mode_combo.addItem("🔊 扬声器", SOURCE_SPEAKER)
+        self.source_mode_combo.addItem("🎤+🔊 混合", SOURCE_BOTH)
+        self.source_mode_combo.setMinimumWidth(120)
+        self.source_mode_combo.currentIndexChanged.connect(self._on_source_mode_changed)
+        top_layout.addWidget(self.source_mode_combo)
 
         # 设置按钮
-        self.settings_btn = QPushButton("⚙️ 设置")
-        self.settings_btn.setFixedHeight(32)
+        self.settings_btn = QPushButton("⚙️")
+        self.settings_btn.setFixedSize(36, 32)
+        self.settings_btn.setToolTip("设置")
         self.settings_btn.setStyleSheet("""
             QPushButton {
-                background-color: #9E9E9E;
-                color: white;
-                font-size: 13px;
-                border-radius: 6px;
-                padding: 0 14px;
+                background-color: #9E9E9E; color: white;
+                font-size: 15px; border-radius: 6px;
             }
             QPushButton:hover { background-color: #757575; }
         """)
@@ -87,10 +86,39 @@ class MainWindow(QMainWindow):
 
         main_layout.addLayout(top_layout)
 
+        # === 设备选择行 ===
+        device_layout = QHBoxLayout()
+
+        # 麦克风选择
+        self.mic_label = QLabel("麦克风:")
+        device_layout.addWidget(self.mic_label)
+        self.mic_combo = QComboBox()
+        self.mic_combo.setMinimumWidth(200)
+        device_layout.addWidget(self.mic_combo)
+
+        device_layout.addSpacing(16)
+
+        # 扬声器选择
+        self.speaker_label = QLabel("扬声器:")
+        device_layout.addWidget(self.speaker_label)
+        self.speaker_combo = QComboBox()
+        self.speaker_combo.setMinimumWidth(200)
+        device_layout.addWidget(self.speaker_combo)
+
+        device_layout.addStretch()
+
+        # 刷新设备按钮
+        self.refresh_btn = QPushButton("🔄")
+        self.refresh_btn.setFixedSize(32, 28)
+        self.refresh_btn.setToolTip("刷新设备列表")
+        self.refresh_btn.clicked.connect(self._load_devices)
+        device_layout.addWidget(self.refresh_btn)
+
+        main_layout.addLayout(device_layout)
+
         # === 中部：双栏显示 ===
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # 左栏 - 原文
         left_group = QGroupBox("📝 原文 (Source)")
         left_layout = QVBoxLayout(left_group)
         self.source_text = QTextEdit()
@@ -99,7 +127,6 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.source_text)
         splitter.addWidget(left_group)
 
-        # 右栏 - 译文
         right_group = QGroupBox("🌍 译文 (Translation)")
         right_layout = QVBoxLayout(right_group)
         self.translated_text = QTextEdit()
@@ -117,11 +144,8 @@ class MainWindow(QMainWindow):
         self.start_btn.setFixedHeight(40)
         self.start_btn.setStyleSheet("""
             QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                font-size: 16px;
-                border-radius: 8px;
-                padding: 0 20px;
+                background-color: #4CAF50; color: white;
+                font-size: 16px; border-radius: 8px; padding: 0 20px;
             }
             QPushButton:hover { background-color: #45a049; }
         """)
@@ -132,11 +156,8 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(False)
         self.stop_btn.setStyleSheet("""
             QPushButton {
-                background-color: #f44336;
-                color: white;
-                font-size: 16px;
-                border-radius: 8px;
-                padding: 0 20px;
+                background-color: #f44336; color: white;
+                font-size: 16px; border-radius: 8px; padding: 0 20px;
             }
             QPushButton:hover { background-color: #da190b; }
         """)
@@ -146,22 +167,20 @@ class MainWindow(QMainWindow):
         self.clear_btn.setFixedHeight(40)
         self.clear_btn.setStyleSheet("""
             QPushButton {
-                background-color: #607D8B;
-                color: white;
-                font-size: 16px;
-                border-radius: 8px;
-                padding: 0 20px;
+                background-color: #607D8B; color: white;
+                font-size: 16px; border-radius: 8px; padding: 0 20px;
             }
         """)
         bottom_layout.addWidget(self.clear_btn)
 
         main_layout.addLayout(bottom_layout)
 
-        # 状态栏
         self.statusBar().showMessage("就绪 - 选择音频源并点击开始")
 
+        # 初始状态：隐藏扬声器选择
+        self._on_source_mode_changed()
+
     def _connect_signals(self):
-        """连接信号"""
         self.start_btn.clicked.connect(self._on_start)
         self.stop_btn.clicked.connect(self._on_stop)
         self.clear_btn.clicked.connect(self._on_clear)
@@ -170,28 +189,42 @@ class MainWindow(QMainWindow):
         self.result_signal.connect(self._on_result)
 
     def _load_devices(self):
-        """加载音频设备列表"""
+        """加载音频设备"""
+        # 麦克风
+        self.mic_combo.clear()
+        self.mic_combo.addItem("🎤 默认麦克风", None)
         try:
-            ac = AudioCapture()
-            devices = ac.list_input_devices()
-            self.device_combo.clear()
-            self.device_combo.addItem("🎤 默认麦克风", None)
-            for d in devices:
-                icon = "🔊" if d.get("is_loopback") else "🎤"
-                self.device_combo.addItem(f"{icon} {d['name']}", d["index"])
+            for d in AudioCapture.list_microphones():
+                self.mic_combo.addItem(f"🎤 {d['name']}", d["index"])
         except Exception as e:
-            logger.error(f"Failed to load devices: {e}")
-            self.device_combo.addItem("🎤 默认麦克风", None)
+            logger.error(f"Failed to list microphones: {e}")
+
+        # 扬声器
+        self.speaker_combo.clear()
+        self.speaker_combo.addItem("🔊 默认扬声器", None)
+        try:
+            for d in AudioCapture.list_speakers():
+                self.speaker_combo.addItem(f"🔊 {d['name']}", d["id"])
+        except Exception as e:
+            logger.error(f"Failed to list speakers: {e}")
+
+    def _on_source_mode_changed(self):
+        """切换音频源模式时显示/隐藏设备选择"""
+        mode = self.source_mode_combo.currentData()
+        show_mic = mode in (SOURCE_MIC, SOURCE_BOTH)
+        show_speaker = mode in (SOURCE_SPEAKER, SOURCE_BOTH)
+
+        self.mic_label.setVisible(show_mic)
+        self.mic_combo.setVisible(show_mic)
+        self.speaker_label.setVisible(show_speaker)
+        self.speaker_combo.setVisible(show_speaker)
 
     def _on_settings(self):
-        """打开设置对话框"""
         dialog = SettingsDialog(self.config, parent=self)
         if dialog.exec():
-            # 设置保存成功，更新配置
             new_config = dialog.get_config()
             self.config.update(new_config)
 
-            # 应用 UI 设置
             ui_config = new_config.get("ui", {})
             font_size = ui_config.get("font_size", 14)
             self.source_text.setFont(QFont("Microsoft YaHei", font_size))
@@ -201,40 +234,36 @@ class MainWindow(QMainWindow):
                 self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
             else:
                 self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint)
-            self.show()  # 需要重新 show
-
-            opacity = ui_config.get("opacity", 0.95)
-            self.setWindowOpacity(opacity)
-
+            self.show()
+            self.setWindowOpacity(ui_config.get("opacity", 0.95))
             self.statusBar().showMessage("✅ 设置已更新")
 
     def _on_start(self):
-        """开始同传"""
         if self._is_interpreting:
             return
 
         # 检查 API Key
-        api_key = self.config.get("dashscope", {}).get("api_key", "")
-        if not api_key:
-            import os
-            api_key = os.environ.get("DASHSCOPE_API_KEY", "")
+        import os
+        api_key = self.config.get("dashscope", {}).get("api_key", "") or os.environ.get("DASHSCOPE_API_KEY", "")
         if not api_key:
             self.statusBar().showMessage("❌ 请先在设置中配置百炼 API Key")
             self._on_settings()
             return
 
         target_lang = self.lang_selector.get_target_lang()
-        device_index = self.device_combo.currentData()
+        source_type = self.source_mode_combo.currentData() or SOURCE_MIC
+        mic_index = self.mic_combo.currentData()
+        speaker_id = self.speaker_combo.currentData()
 
-        # 添加通道
         self.interpreter = Interpreter(self.config)
         self.interpreter.add_channel(ChannelConfig(
             name="main",
-            device_index=device_index,
-            target_lang=target_lang
+            target_lang=target_lang,
+            source_type=source_type,
+            mic_index=mic_index,
+            speaker_id=speaker_id,
         ))
 
-        # 设置回调
         self.interpreter.set_result_callback(
             lambda ch, result: self.result_signal.emit(ch, result)
         )
@@ -244,51 +273,45 @@ class MainWindow(QMainWindow):
             self._is_interpreting = True
             self.start_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
-            self.settings_btn.setEnabled(False)  # 同传中禁用设置
-            self.statusBar().showMessage(f"🔴 同传中... (→ {target_lang})")
+            self.settings_btn.setEnabled(False)
+            self.source_mode_combo.setEnabled(False)
+            source_label = self.source_mode_combo.currentText()
+            self.statusBar().showMessage(f"🔴 同传中... ({source_label} → {target_lang})")
         except Exception as e:
             logger.error(f"Start failed: {e}")
             self.statusBar().showMessage(f"❌ 启动失败: {e}")
 
     def _on_stop(self):
-        """停止同传"""
         if not self._is_interpreting:
             return
-
         self.interpreter.stop()
         self._is_interpreting = False
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.settings_btn.setEnabled(True)
+        self.source_mode_combo.setEnabled(True)
         self.statusBar().showMessage("⏹️ 已停止")
 
     def _on_clear(self):
-        """清空文本"""
         self.source_text.clear()
         self.translated_text.clear()
 
     def _on_language_changed(self, source_lang, target_lang):
-        """语言切换"""
         if self._is_interpreting:
             self.interpreter.switch_language("main", target_lang)
             self.statusBar().showMessage(f"🔴 同传中... (→ {target_lang})")
 
     @pyqtSlot(str, object)
     def _on_result(self, channel_name: str, result: TranslationResult):
-        """处理翻译结果（UI线程）"""
         if result.is_final:
-            # 最终结果：追加新行
             if result.source_text:
                 self.source_text.append(result.source_text)
             if result.translated_text:
                 self.translated_text.append(result.translated_text)
         else:
-            # 中间结果（流式）：显示在临时区域
             if result.source_text:
-                # 替换最后一行显示中间结果
                 cursor = self.source_text.textCursor()
                 cursor.movePosition(QTextCursor.MoveOperation.End)
-                # 选中最后一行并替换
                 cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock, QTextCursor.MoveMode.KeepAnchor)
                 cursor.removeSelectedText()
                 cursor.insertText(f"💬 {result.source_text}")
@@ -299,7 +322,6 @@ class MainWindow(QMainWindow):
                 cursor.insertText(result.translated_text)
                 self.translated_text.setTextCursor(cursor)
 
-        # 自动滚动
         self.source_text.verticalScrollBar().setValue(
             self.source_text.verticalScrollBar().maximum()
         )
@@ -308,7 +330,6 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event):
-        """窗口关闭时停止"""
         if self._is_interpreting:
             self.interpreter.stop()
         event.accept()

@@ -1,14 +1,13 @@
 """
 同声传译核心调度器
-管理双路音频 + 双路翻译
+管理音频采集 + 翻译
 """
 
 import logging
-import threading
 from typing import Callable, Optional
 from dataclasses import dataclass
 
-from core.audio_capture import AudioCapture
+from core.audio_capture import AudioCapture, SOURCE_MIC, SOURCE_SPEAKER, SOURCE_BOTH
 from core.asr_translator import ASRTranslator, TranslationResult
 
 logger = logging.getLogger(__name__)
@@ -16,32 +15,27 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ChannelConfig:
-    """单路通道配置"""
-    name: str              # 通道名称（如 "mic", "system"）
-    device_index: Optional[int]  # 音频设备索引
-    target_lang: str       # 目标翻译语言
+    """通道配置"""
+    name: str                          # 通道名称
+    target_lang: str                   # 目标翻译语言
+    source_type: str = SOURCE_MIC      # "mic" / "speaker" / "both"
+    mic_index: Optional[int] = None    # 麦克风设备索引
+    speaker_id: Optional[str] = None   # 扬声器设备 ID
 
 
 class Interpreter:
     """
     同声传译调度器
-    支持双路音频同时工作：
-    - Channel A: 麦克风 → 中文识别 → 英文翻译
-    - Channel B: 系统音频 → 英文识别 → 中文翻译
+    支持麦克风、扬声器、或混合输入
     """
 
     def __init__(self, config: dict):
         self.config = config
-        self.channels = {}  # name -> (AudioCapture, ASRTranslator)
+        self.channels = {}
         self._on_result_callback = None
         self._is_running = False
 
     def set_result_callback(self, callback: Callable[[str, TranslationResult], None]):
-        """
-        设置结果回调
-        Args:
-            callback: callback(channel_name, result)
-        """
         self._on_result_callback = callback
 
     def add_channel(self, channel_config: ChannelConfig):
@@ -55,20 +49,18 @@ class Interpreter:
         self.channels[channel_config.name] = {
             "audio": audio,
             "translator": translator,
-            "config": channel_config
+            "config": channel_config,
         }
-        logger.info(f"Channel added: {channel_config.name} → {channel_config.target_lang}")
+        logger.info(f"Channel added: {channel_config.name} ({channel_config.source_type}) → {channel_config.target_lang}")
 
     def start(self):
         """启动所有通道"""
         if self._is_running:
-            logger.warning("Interpreter already running")
             return
 
         for name, ch in self.channels.items():
             config = ch["config"]
 
-            # 创建结果回调（闭包捕获 channel name）
             def make_callback(ch_name):
                 def on_result(result: TranslationResult):
                     if self._on_result_callback:
@@ -81,9 +73,11 @@ class Interpreter:
                 on_result=make_callback(name)
             )
 
-            # 启动音频采集，数据直接喂给翻译引擎
+            # 启动音频采集
             ch["audio"].start(
-                device_index=config.device_index,
+                source_type=config.source_type,
+                mic_index=config.mic_index,
+                speaker_id=config.speaker_id,
                 callback=ch["translator"].send_audio
             )
 
@@ -93,29 +87,25 @@ class Interpreter:
         logger.info("Interpreter started")
 
     def stop(self):
-        """停止所有通道"""
         for name, ch in self.channels.items():
             ch["audio"].stop()
             ch["translator"].stop()
-            logger.info(f"Channel '{name}' stopped")
-
         self._is_running = False
         logger.info("Interpreter stopped")
 
     def switch_language(self, channel_name: str, target_lang: str):
-        """切换某个通道的目标语言"""
         if channel_name in self.channels:
             ch = self.channels[channel_name]
             ch["translator"].switch_language(target_lang)
             ch["config"].target_lang = target_lang
-            logger.info(f"Channel '{channel_name}' switched to {target_lang}")
 
-    def list_audio_devices(self):
-        """列出可用音频设备"""
-        ac = AudioCapture()
-        devices = ac.list_devices()
-        ac.stop()
-        return devices
+    @staticmethod
+    def list_microphones():
+        return AudioCapture.list_microphones()
+
+    @staticmethod
+    def list_speakers():
+        return AudioCapture.list_speakers()
 
     @property
     def is_running(self):

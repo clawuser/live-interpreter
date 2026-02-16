@@ -2,3 +2,5 @@ websocket-client>=1.6.0
 PyQt6>=6.6.0
 pyaudio>=0.2.14
 PyYAML>=6.0
+soundcard>=0.4.0
+numpy>=1.24.0
