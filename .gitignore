@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *.log
 .env
+user_settings.yaml
 .idea/
 .vscode/
 dist/

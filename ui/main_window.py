@@ -1,6 +1,6 @@
 """
 主窗口 - 同声传译 UI
-左栏原文 + 右栏译文
+左栏原文 + 右栏译文 + 设置入口
 """
 
 import sys
@@ -15,6 +15,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QTimer
 from PyQt6.QtGui import QFont, QColor, QTextCursor, QIcon, QAction
 
 from ui.language_selector import LanguageSelector
+from ui.settings_dialog import SettingsDialog
 from core.interpreter import Interpreter, ChannelConfig
 from core.asr_translator import TranslationResult
 from core.audio_capture import AudioCapture
@@ -54,7 +55,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
 
-        # === 顶部：语言选择 + 设备选择 ===
+        # === 顶部：语言选择 + 设备选择 + 设置 ===
         top_layout = QHBoxLayout()
 
         # 语言选择器
@@ -68,6 +69,21 @@ class MainWindow(QMainWindow):
         self.device_combo = QComboBox()
         self.device_combo.setMinimumWidth(200)
         top_layout.addWidget(self.device_combo)
+
+        # 设置按钮
+        self.settings_btn = QPushButton("⚙️ 设置")
+        self.settings_btn.setFixedHeight(32)
+        self.settings_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #9E9E9E;
+                color: white;
+                font-size: 13px;
+                border-radius: 6px;
+                padding: 0 14px;
+            }
+            QPushButton:hover { background-color: #757575; }
+        """)
+        top_layout.addWidget(self.settings_btn)
 
         main_layout.addLayout(top_layout)
 
@@ -107,9 +123,7 @@ class MainWindow(QMainWindow):
                 border-radius: 8px;
                 padding: 0 20px;
             }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
+            QPushButton:hover { background-color: #45a049; }
         """)
         bottom_layout.addWidget(self.start_btn)
 
@@ -124,9 +138,7 @@ class MainWindow(QMainWindow):
                 border-radius: 8px;
                 padding: 0 20px;
             }
-            QPushButton:hover {
-                background-color: #da190b;
-            }
+            QPushButton:hover { background-color: #da190b; }
         """)
         bottom_layout.addWidget(self.stop_btn)
 
@@ -153,6 +165,7 @@ class MainWindow(QMainWindow):
         self.start_btn.clicked.connect(self._on_start)
         self.stop_btn.clicked.connect(self._on_stop)
         self.clear_btn.clicked.connect(self._on_clear)
+        self.settings_btn.clicked.connect(self._on_settings)
         self.lang_selector.language_changed.connect(self._on_language_changed)
         self.result_signal.connect(self._on_result)
 
@@ -170,23 +183,58 @@ class MainWindow(QMainWindow):
             logger.error(f"Failed to load devices: {e}")
             self.device_combo.addItem("🎤 默认麦克风", None)
 
+    def _on_settings(self):
+        """打开设置对话框"""
+        dialog = SettingsDialog(self.config, parent=self)
+        if dialog.exec():
+            # 设置保存成功，更新配置
+            new_config = dialog.get_config()
+            self.config.update(new_config)
+
+            # 应用 UI 设置
+            ui_config = new_config.get("ui", {})
+            font_size = ui_config.get("font_size", 14)
+            self.source_text.setFont(QFont("Microsoft YaHei", font_size))
+            self.translated_text.setFont(QFont("Microsoft YaHei", font_size))
+
+            if ui_config.get("always_on_top", False):
+                self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+            else:
+                self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint)
+            self.show()  # 需要重新 show
+
+            opacity = ui_config.get("opacity", 0.95)
+            self.setWindowOpacity(opacity)
+
+            self.statusBar().showMessage("✅ 设置已更新")
+
     def _on_start(self):
         """开始同传"""
         if self._is_interpreting:
+            return
+
+        # 检查 API Key
+        api_key = self.config.get("dashscope", {}).get("api_key", "")
+        if not api_key:
+            import os
+            api_key = os.environ.get("DASHSCOPE_API_KEY", "")
+        if not api_key:
+            self.statusBar().showMessage("❌ 请先在设置中配置百炼 API Key")
+            self._on_settings()
             return
 
         target_lang = self.lang_selector.get_target_lang()
         device_index = self.device_combo.currentData()
 
         # 添加通道
-        self.interpreter = Interpreter(self.config)  # 重新创建
+        self.interpreter = Interpreter(self.config)
         self.interpreter.add_channel(ChannelConfig(
             name="main",
             device_index=device_index,
             target_lang=target_lang
         ))
 
-        # 设置回调（通过信号传递到UI线程）
+        # 设置回调
         self.interpreter.set_result_callback(
             lambda ch, result: self.result_signal.emit(ch, result)
         )
@@ -196,6 +244,7 @@ class MainWindow(QMainWindow):
             self._is_interpreting = True
             self.start_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
+            self.settings_btn.setEnabled(False)  # 同传中禁用设置
             self.statusBar().showMessage(f"🔴 同传中... (→ {target_lang})")
         except Exception as e:
             logger.error(f"Start failed: {e}")
@@ -210,6 +259,7 @@ class MainWindow(QMainWindow):
         self._is_interpreting = False
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        self.settings_btn.setEnabled(True)
         self.statusBar().showMessage("⏹️ 已停止")
 
     def _on_clear(self):
@@ -227,19 +277,17 @@ class MainWindow(QMainWindow):
     def _on_result(self, channel_name: str, result: TranslationResult):
         """处理翻译结果（UI线程）"""
         if result.is_final:
-            # 最终结果：追加到文本框
             if result.source_text:
                 self.source_text.append(result.source_text)
             if result.translated_text:
                 self.translated_text.append(result.translated_text)
         else:
-            # 中间结果：更新最后一行
             if result.source_text:
                 cursor = self.source_text.textCursor()
                 cursor.movePosition(QTextCursor.MoveOperation.End)
                 self.source_text.setTextCursor(cursor)
 
-        # 自动滚动到底部
+        # 自动滚动
         self.source_text.verticalScrollBar().setValue(
             self.source_text.verticalScrollBar().maximum()
         )

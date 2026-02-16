@@ -20,38 +20,43 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def load_config(path="config.yaml"):
-    """加载配置文件"""
-    if not os.path.exists(path):
-        logger.error(f"Config file not found: {path}")
-        sys.exit(1)
+def load_config():
+    """加载配置：config.yaml (默认) + user_settings.yaml (用户覆盖)"""
+    config = {}
 
-    with open(path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    # 1. 加载默认配置
+    if os.path.exists("config.yaml"):
+        with open("config.yaml", "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
 
-    # 优先使用环境变量中的 API Key
+    # 2. 加载用户设置（覆盖默认）
+    if os.path.exists("user_settings.yaml"):
+        with open("user_settings.yaml", "r", encoding="utf-8") as f:
+            user = yaml.safe_load(f) or {}
+        _deep_merge(config, user)
+
+    # 3. 环境变量兜底
     if not config.get("dashscope", {}).get("api_key") and os.environ.get("DASHSCOPE_API_KEY"):
         config.setdefault("dashscope", {})["api_key"] = os.environ["DASHSCOPE_API_KEY"]
 
     return config
 
 
+def _deep_merge(base: dict, override: dict):
+    """深度合并配置"""
+    for k, v in override.items():
+        if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+            _deep_merge(base[k], v)
+        else:
+            base[k] = v
+
+
 def main():
     from PyQt6.QtWidgets import QApplication
     from ui.main_window import MainWindow
 
-    # 加载配置
     config = load_config()
 
-    # 检查 API Key
-    api_key = config.get("dashscope", {}).get("api_key", "")
-    if not api_key:
-        logger.error("请设置百炼 API Key:")
-        logger.error("  方式1: 编辑 config.yaml 中的 dashscope.api_key")
-        logger.error("  方式2: 设置环境变量 export DASHSCOPE_API_KEY=sk-xxx")
-        sys.exit(1)
-
-    # 启动 Qt 应用
     app = QApplication(sys.argv)
     app.setApplicationName("Live Interpreter")
 
