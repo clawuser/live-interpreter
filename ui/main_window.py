@@ -277,15 +277,27 @@ class MainWindow(QMainWindow):
     def _on_result(self, channel_name: str, result: TranslationResult):
         """处理翻译结果（UI线程）"""
         if result.is_final:
+            # 最终结果：追加新行
             if result.source_text:
                 self.source_text.append(result.source_text)
             if result.translated_text:
                 self.translated_text.append(result.translated_text)
         else:
+            # 中间结果（流式）：显示在临时区域
             if result.source_text:
+                # 替换最后一行显示中间结果
                 cursor = self.source_text.textCursor()
                 cursor.movePosition(QTextCursor.MoveOperation.End)
+                # 选中最后一行并替换
+                cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock, QTextCursor.MoveMode.KeepAnchor)
+                cursor.removeSelectedText()
+                cursor.insertText(f"💬 {result.source_text}")
                 self.source_text.setTextCursor(cursor)
+            if result.translated_text:
+                cursor = self.translated_text.textCursor()
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+                cursor.insertText(result.translated_text)
+                self.translated_text.setTextCursor(cursor)
 
         # 自动滚动
         self.source_text.verticalScrollBar().setValue(

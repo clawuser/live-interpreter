@@ -108,18 +108,13 @@ class ASRTranslator:
             "event_id": "evt_update_session",
             "type": "session.update",
             "session": {
-                "input_audio_format": audio_config.get("format", "pcm"),
-                "sample_rate": audio_config.get("sample_rate", 16000),
-                "turn_detection": {
-                    "type": "server_vad",
-                    "threshold": model_config.get("vad_threshold", 0.0),
-                    "silence_duration_ms": model_config.get("vad_silence_duration_ms", 400),
-                },
+                "modalities": ["text"],
+                "input_audio_format": "pcm16",
                 "input_audio_transcription": {
-                    "model": "qwen3-livetranslate-flash-realtime",
+                    "model": "qwen3-asr-flash-realtime",
                 },
                 "translation": {
-                    "target_languages": [self._target_lang],
+                    "language": self._target_lang,
                 },
             }
         }
@@ -146,7 +141,7 @@ class ASRTranslator:
                 logger.debug("Speech stopped")
 
             elif event_type == "conversation.item.input_audio_transcription.text":
-                # 中间识别结果
+                # 原文中间识别结果（流式）
                 stash = data.get("stash", "")
                 if stash and self._on_result:
                     self._on_result(TranslationResult(
@@ -158,25 +153,39 @@ class ASRTranslator:
                     ))
 
             elif event_type == "conversation.item.input_audio_transcription.completed":
-                # 最终识别+翻译结果
+                # 原文最终识别结果
                 transcript = data.get("transcript", "")
-                # 翻译结果可能在 translation 字段
-                translation = data.get("translation", "")
-                # 也可能在 output 中
-                if not translation:
-                    output = data.get("output", {})
-                    if isinstance(output, dict):
-                        translations = output.get("translations", [])
-                        if translations:
-                            translation = translations[0].get("text", "")
-
-                if (transcript or translation) and self._on_result:
+                if transcript and self._on_result:
                     self._on_result(TranslationResult(
                         source_text=transcript,
-                        translated_text=translation,
+                        translated_text="",
                         source_lang="auto",
                         target_lang=self._target_lang,
                         is_final=True,
+                    ))
+
+            elif event_type == "response.text.done":
+                # 翻译最终结果
+                text = data.get("text", "")
+                if text and self._on_result:
+                    self._on_result(TranslationResult(
+                        source_text="",
+                        translated_text=text,
+                        source_lang="auto",
+                        target_lang=self._target_lang,
+                        is_final=True,
+                    ))
+
+            elif event_type == "response.text.delta":
+                # 翻译中间结果（流式）
+                delta = data.get("delta", "")
+                if delta and self._on_result:
+                    self._on_result(TranslationResult(
+                        source_text="",
+                        translated_text=delta,
+                        source_lang="auto",
+                        target_lang=self._target_lang,
+                        is_final=False,
                     ))
 
             elif event_type == "error":
